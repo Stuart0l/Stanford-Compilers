@@ -37,6 +37,8 @@ char *string_buf_ptr;
 extern int curr_lineno;
 extern int verbose_flag;
 
+size_t cmt_layer = 0;
+
 extern YYSTYPE cool_yylval;
 
 /*
@@ -72,19 +74,25 @@ str			\"(\\.|[^\\"])*\"
   */
 "--".*
 
-"(*"		BEGIN(COMMENT);
+<INITIAL,COMMENT>"(*" {
+	cmt_layer++;
+	BEGIN(COMMENT);
+}
 
-<COMMENT>[^*\n]*
-<COMMENT>"*"+[^*)\n]*
+<COMMENT>"*)" {
+	if (--cmt_layer == 0)
+		BEGIN(INITIAL);
+}
+<COMMENT>.
 <COMMENT>\n			++curr_lineno;
-<COMMENT>"*)"		BEGIN(INITIAL);
+
 <COMMENT><<EOF>> {
-	cool_yylval.error_msg = "EOF in comment";
+	cool_yylval.error_msg = "EOF in comment.";
 	BEGIN(INITIAL);
 	return ERROR;
 }
 "*)" {
-	cool_yylval.error_msg = "Unmatched *)";
+	cool_yylval.error_msg = "Unmatched *).";
 	return ERROR;
 }
 
@@ -138,31 +146,39 @@ f(?i:alse)	{
 }
 
 <STRING>\n {
-	cool_yylval.error_msg = "Unterminated string constant";
+	cool_yylval.error_msg = "Unterminated string constant.";
 	BEGIN(INITIAL);
 	return ERROR;
 }
 
+ /*
+ The regular expression can't match \0 well, thus handle this later.
 <STRING>\0 {
-	cool_yylval.error_msg = "String contains null character";
+	cool_yylval.error_msg = "String contains null character.";
 	BEGIN(INITIAL);
 	return ERROR;
 }
+
+<STRING>\\\0 {
+	cool_yylval.error_msg = "String contains escaped null character.";
+	BEGIN(INITIAL);
+	return ERROR;
+} */
 
 <STRING><<EOF>> {
-	cool_yylval.error_msg = "EOF in string constant";
+	cool_yylval.error_msg = "EOF in string constant.";
 	BEGIN(INITIAL);
-	return ERROR;
-}
-
-<STRING>\\\" {
-	cool_yylval.error_msg = "\\ at end of string";
-	BEGIN(INITIAL);
+	yyrestart(yyin);
 	return ERROR;
 }
 
  /* www.lysator.liu.se/c/ANSI-C-grammar-l.html */
-<STRING>(\\.|\\\n|[^\\"])* {	yymore(); }
+<STRING>(\\.|[^\\\"\n])* { yymore(); }
+
+<STRING>\\\n {
+	yymore();
+	++curr_lineno;
+}
 
 <STRING>\" {
 	std::string input(yytext, yyleng);
@@ -172,6 +188,12 @@ f(?i:alse)	{
 	input = input.substr(1, input.length() - 2);
 	
 	for (i = 0, last_i = 0; i < input.length(); i++) {
+		if (input[i] == '\0') {
+			cool_yylval.error_msg = "String contains null character.";
+			BEGIN(INITIAL);
+			return ERROR;
+		}
+
 		if (input[i] == '\\') {
 			output += input.substr(last_i, i - last_i);
 
@@ -188,9 +210,10 @@ f(?i:alse)	{
 			case 'f':
 				output += "\f";
 				break;
-			case '\n':
-				output += "\n";
-				break;
+			case '\0':
+				cool_yylval.error_msg = "String contains escaped null character.";
+				BEGIN(INITIAL);
+				return ERROR;
 			default:
 				output += input[i];
 				break;
@@ -201,8 +224,8 @@ f(?i:alse)	{
 
 	output += input.substr(last_i, i - last_i);
 	
-	if (output.length() > MAX_STR_CONST) {
-		cool_yylval.error_msg = "String exceeds max length";
+	if (output.length() >= MAX_STR_CONST) {
+		cool_yylval.error_msg = "String constant too long.";
 		BEGIN(INITIAL);
 		return ERROR;
 	}
