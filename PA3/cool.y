@@ -75,7 +75,6 @@ plus_consts	: INT_CONST '+' INT_CONST
 
 
 void yyerror(char *s);        /*  defined below; called for each parse error */
-Expression nested_let(int i, Features attr_list, Expression body);
 extern int yylex();           /*  the entry point to the lexer  */
 
 /************************************************************************/
@@ -136,8 +135,9 @@ documentation for details). */
 %type <class_> class
 %type <cases> branch_list
 %type <case_> branch
-%type <expression> expr
-%type <expression> expr_end
+%type <expression> expr expr_end
+%type <expression> condition matched_if unmatched_if
+%type <expression> nested_let
 %type <expressions> expr_list
 %type <expressions> multi_expr
 %type <formal> formal
@@ -145,13 +145,11 @@ documentation for details). */
 
 /* You will want to change the following line. */
 %type <features> dummy_feature_list
-%type <features> feature_list
-%type <features> attr_list
-%type <feature> feature
-%type <feature> method
-%type <feature> attr
+%type <features> feature_list //attr_list
+%type <feature> feature method attr
 
 /* Precedence declarations go here. */
+/* low */
 %right ASSIGN
 %left NOT
 %nonassoc LE '<' '='
@@ -161,6 +159,7 @@ documentation for details). */
 %left '~'
 %left '@'
 %left '.'
+/* high */
     
 %%
 /* 
@@ -184,6 +183,7 @@ class	: CLASS TYPEID '{' feature_list '}' ';'
 stringtable.add_string(curr_filename)); }
 | CLASS TYPEID INHERITS TYPEID '{' feature_list '}' ';'
 { $$ = class_($2,$4,$6,stringtable.add_string(curr_filename)); }
+| error ';' {}
 ;
 
 /* Feature list may be empty, but no empty features in list. */
@@ -203,6 +203,7 @@ feature
 { $$ = $1; }
 | attr ';'
 { $$ = $1; }
+| error ';' {}
 ;
 
 method
@@ -217,12 +218,14 @@ attr
 { $$ = attr($1, $3, $5); }
 ;
 
+/*
 attr_list
 : attr
 { $$ = single_Features($1); }
 | attr_list ',' attr
 { $$ = append_Features($1, single_Features($3)); }
 ;
+*/
 
 /* Formals */
 formal_list
@@ -263,31 +266,78 @@ expr
 { $$ = dispatch($1, $3, $5); }
 | expr '@' TYPEID '.' OBJECTID '(' expr_list ')'
 { $$ = static_dispatch($1, $3, $5, $7); }
-| IF expr THEN expr ELSE expr FI
-{ $$ = cond($2, $4, $6); }
+| OBJECTID '(' expr_list ')'
+{ $$ = dispatch(object(idtable.add_string("self")), $1, $3); }
+| condition { $$ = $1; }
 | WHILE expr LOOP expr POOL
 { $$ = loop($2, $4); }
+| WHILE expr LOOP error {}
 | '{' multi_expr '}'
 { $$ = block($2); }
-| LET attr_list IN expr
-{ $$ = nested_let($2->first(), $2, $4); }
+| LET OBJECTID ':' TYPEID nested_let
+{ $$ = let($2, $4, no_expr(), $5); }
+| LET OBJECTID ':' TYPEID ASSIGN expr nested_let
+{ $$ = let($2, $4, $6, $7); }
 | CASE expr OF branch_list ESAC
 { $$ = typcase($2, $4); }
-| NEW TYPEID { $$ = new_($2); }
-| ISVOID expr { $$ = isvoid($2); }
-| expr '+' expr { $$ = plus($1, $3); }
-| expr '-' expr { $$ = sub($1, $3); }
+| NEW TYPEID	{ $$ = new_($2); }
+| ISVOID expr	{ $$ = isvoid($2); }
+| expr '+' expr	{ $$ = plus($1, $3); }
+| expr '-' expr	{ $$ = sub($1, $3); }
 | expr '*' expr { $$ = mul($1, $3); }
 | expr '/' expr { $$ = divide($1, $3); }
-| '~' expr { $$ = neg($2); }
+| '~' expr		{ $$ = neg($2); }
 | expr '<' expr { $$ = lt($1, $3); }
-| expr LE expr { $$ = leq($1, $3); }
-| NOT expr { $$ = comp($2); }
-| '(' expr ')' { $$ = $2; }
-| OBJECTID { $$ = object($1); }
-| INT_CONST { $$ = int_const($1); }
-| STR_CONST { $$ = string_const($1); }
-| BOOL_CONST { $$ = bool_const($1); }
+| expr LE expr	{ $$ = leq($1, $3); }
+| expr '=' expr	{ $$ = eq($1, $3); }
+| NOT expr		{ $$ = comp($2); }
+| '(' expr ')'	{ $$ = $2; }
+| OBJECTID		{ $$ = object($1); }
+| INT_CONST		{ $$ = int_const($1); }
+| STR_CONST		{ $$ = string_const($1); }
+| BOOL_CONST	{ $$ = bool_const($1); }
+| error {}
+;
+
+/*
+ * let id0:type0, id1:type1, ..,idk:typek in expr
+ * ->
+ * let id0:type0 in {
+ *   let id1:type1 in {
+ *		..
+ *		let idk:typek in expr
+ * }}
+ */
+nested_let
+: IN expr
+{ $$ = $2; }
+| ',' OBJECTID ':' TYPEID nested_let
+{ $$ = let($2, $4, no_expr(), $5); }
+| ',' OBJECTID ':' TYPEID ASSIGN expr nested_let
+{ $$ = let($2, $4, $6, $7); }
+;
+
+condition
+: matched_if	{ $$ = $1; }
+| unmatched_if	{ $$ = $1; }
+;
+
+matched_if
+: IF expr THEN matched_if ELSE matched_if FI
+{ $$ = cond($2, $4, $6); }
+| IF expr THEN expr ELSE matched_if FI
+{ $$ = cond($2, $4, $6); }
+| IF expr THEN matched_if ELSE expr FI
+{ $$ = cond($2, $4, $6); }
+| IF expr THEN expr ELSE expr FI
+{ $$ = cond($2, $4, $6); }
+;
+
+unmatched_if
+: IF expr THEN expr FI
+{ $$ = cond($2, $4, no_expr()); }
+| IF expr THEN matched_if ELSE unmatched_if FI
+{ $$ = cond($2, $4, $6); }
 ;
 
 multi_expr
@@ -315,23 +365,5 @@ void yyerror(char *s)
   omerrs++;
   
   if(omerrs>50) {fprintf(stdout, "More than 50 errors\n"); exit(1);}
-}
-
-Expression nested_let(int i, Features attr_list, Expression body)
-{
-	attr_class *curr_expr;
-	Expression let_body;
-	
-	curr_expr = dynamic_cast<attr_class *>(attr_list->nth(i));
-	//curr_expr->dump(cerr, 0);
-
-	i = attr_list->next(i);
-	if (attr_list->more(i))
-		let_body = nested_let(i, attr_list, body);
-	else
-		let_body = body;
-
-	return let(curr_expr->get_name(), curr_expr->get_type_decl(),
-			   curr_expr->get_init(), let_body);
 }
 
