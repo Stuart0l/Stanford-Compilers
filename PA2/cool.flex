@@ -48,6 +48,12 @@ extern YYSTYPE cool_yylval;
 %}
 
 /*
+ * using this to avoid "undefined reference to yylex()" error when using
+ * new version of flex. accordingly, don't link to libfl.so
+ */
+%option noyywrap
+
+/*
  * Define names for regular expressions here.
  */
 
